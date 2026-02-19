@@ -3,32 +3,28 @@ using Ipopt
 using JuMP
 using Printf
 
-"""
-Конвертация нашей сети в формат PowerModels
-"""
+
 function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
     
-    # Базовая мощность (MVA)
     baseMVA = 100.0
     
-    # Создаем словарь для PowerModels
+ 
     data = Dict{String, Any}(
         "name" => "test_network",
         "baseMVA" => baseMVA,
-        "per_unit" => true,          # данные уже в p.u. (делим на baseMVA ниже)
+        "per_unit" => true,          
         "source_type" => "unknown",
         "source_version" => "0",
         "bus" => Dict{String, Any}(),
         "load" => Dict{String, Any}(),
         "gen" => Dict{String, Any}(),
         "branch" => Dict{String, Any}(),
-        "shunt" => Dict{String, Any}(),   # обязательное поле (может быть пустым)
-        "dcline" => Dict{String, Any}(),  # обязательное поле (может быть пустым)
-        "storage" => Dict{String, Any}(), # обязательное поле (может быть пустым)
-        "switch" => Dict{String, Any}()   # обязательное поле (может быть пустым)
+        "shunt" => Dict{String, Any}(),   
+        "dcline" => Dict{String, Any}(),
+        "storage" => Dict{String, Any}(),
+        "switch" => Dict{String, Any}()  
     )
     
-    # Добавляем buses
     for (i, bus_name) in enumerate(buses)
         data["bus"]["$i"] = Dict{String, Any}(
             "bus_i" => i,
@@ -43,7 +39,7 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
         )
     end
     
-    # Добавляем генераторы (все мощности в p.u. = МВт / baseMVA)
+   
     gen_idx = 1
     for (bus, (P, V_set)) in generators
         data["gen"]["$gen_idx"] = Dict{String, Any}(
@@ -60,7 +56,7 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
             "index" => gen_idx
         )
         
-        # Первый генератор = slack bus
+
         if gen_idx == 1
             data["bus"]["$bus"]["bus_type"] = 3
         end
@@ -68,7 +64,7 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
         gen_idx += 1
     end
     
-    # Добавляем нагрузки (все мощности в p.u. = МВт / baseMVA)
+  
     load_idx = 1
     for (bus, (P, Q)) in loads
         data["load"]["$load_idx"] = Dict{String, Any}(
@@ -81,31 +77,31 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
         load_idx += 1
     end
     
-    # Добавляем линии
+
     for (i, (from, to, r, x)) in enumerate(lines)
         z_base = v_nom^2 / baseMVA
         r_pu = r / z_base
         x_pu = x / z_base
         
-        b_charge = 0.0  # ёмкостная восприимчивость линии (charging)
+        b_charge = 0.0  
         data["branch"]["$i"] = Dict{String, Any}(
             "f_bus" => from,
             "t_bus" => to,
             "br_r" => r_pu,
             "br_x" => x_pu,
             "br_b" => b_charge,
-            "g_fr" => 0.0,              # шунтовая проводимость на from-конце
-            "b_fr" => b_charge / 2.0,   # половина ёмкостной восприимчивости
-            "g_to" => 0.0,              # шунтовая проводимость на to-конце
-            "b_to" => b_charge / 2.0,   # половина ёмкостной восприимчивости
+            "g_fr" => 0.0,             
+            "b_fr" => b_charge / 2.0, 
+            "g_to" => 0.0,             
+            "b_to" => b_charge / 2.0,  
             "rate_a" => 1000.0,
             "rate_b" => 1000.0,
             "rate_c" => 1000.0,
             "tap" => 1.0,
             "shift" => 0.0,
             "br_status" => 1,
-            "angmin" => -π/3,   # в радианах! (-60° = -π/3 ≈ -1.047)
-            "angmax" => π/3,    # в радианах! (+60° = +π/3 ≈ +1.047)
+            "angmin" => -π/3,  
+            "angmax" => π/3,  
             "index" => i
         )
     end
@@ -113,16 +109,14 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
     return data
 end
 
-"""
-Решение AC Power Flow с PowerModels
-"""
+
 function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_nom=380.0)
     
     println("="^60)
     println("AC POWER FLOW - USING POWERMODELS.JL")
     println("="^60)
     
-    # Конвертируем в формат PowerModels
+   
     println("\nStep 1: Converting network to PowerModels format...")
     pm_data = network_to_powermodels(buses, lines, generators, loads, v_nom)
     
@@ -132,15 +126,13 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
     println("  Generators: $(length(pm_data["gen"]))")
     println("  Loads: $(length(pm_data["load"]))")
     
-    # Решаем AC Power Flow
+    
     println("\nStep 2: Solving AC Power Flow...")
     
-    # Создаем solver с тихим режимом
     solver = optimizer_with_attributes(Ipopt.Optimizer, 
                                        "print_level" => 0,
                                        "sb" => "yes")
     
-    # solve_ac_pf(data, optimizer) — ACPPowerModel уже вшит внутри функции
     result = solve_ac_pf(pm_data, solver)
     
     if result["termination_status"] == LOCALLY_SOLVED || 
@@ -154,7 +146,6 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
         
         sol = result["solution"]
         
-        # Напряжения
         println("\n1. VOLTAGE MAGNITUDES (p.u.):")
         V_mag = Float64[]
         V_ang = Float64[]
@@ -173,7 +164,6 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
                     buses[i], V_ang[i], V_ang[i] * 180/π)
         end
         
-        # Потоки на линиях
         println("\n3. LINE FLOWS:")
         @printf("%-15s %15s %15s\n", "Line", "P (MW)", "Q (MVAr)")
         println("-"^50)
@@ -181,8 +171,6 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
         line_P = Float64[]
         line_Q = Float64[]
 
-        # В build_pf потоки — JuMP-выражения, в sol["branch"] их нет.
-        # Нужно: слить solution в pm_data, затем calc_branch_flow_ac вычислит потоки из напряжений.
         baseMVA = pm_data["baseMVA"]
         PowerModels.update_data!(pm_data, sol)
         branch_flows = PowerModels.calc_branch_flow_ac(pm_data)
@@ -195,7 +183,6 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
             @printf("%-15s %15.6f %15.6f\n", name, pf, qf)
         end
         
-        # Генераторы
         println("\n4. GENERATOR OUTPUT:")
         @printf("%-15s %15s %15s\n", "Generator", "P (MW)", "Q (MVAr)")
         println("-"^50)
@@ -232,9 +219,7 @@ function solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, v_
     end
 end
 
-# ============================================
-# ТЕСТ
-# ============================================
+
 
 println("\n\nCreating test network (same as PyPSA)...")
 
@@ -254,10 +239,8 @@ loads = Dict(
     3 => (200.0, 0.0)
 )
 
-# Решаем
 results = solve_ac_pf_powermodels(buses, lines, generators, loads, line_names, 380.0)
 
-# Сравнение с PyPSA
 if results !== nothing
     println("\n\n" * "="^60)
     println("COMPARISON WITH PyPSA")

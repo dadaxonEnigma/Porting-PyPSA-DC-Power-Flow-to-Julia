@@ -3,18 +3,7 @@ using HiGHS
 using Printf
 using LinearAlgebra
 
-"""
-Linear Optimal Power Flow (LOPF)
 
-Математическая формулировка (стандарт IEEE):
-  min  Σ_i  c_i · P_gen_i                        (стоимость генерации)
-  s.t. B_MW · θ = P_inj [MW]                      (баланс мощности, DC PF)
-       |b_km · (θ_k - θ_m)| ≤ P_max_km [MW]       (ограничения линий)
-       0 ≤ P_gen_i ≤ P_max_i [MW]                  (ограничения генераторов)
-       θ_ref = 0                                    (референсный узел)
-
-Единицы: мощность в МВт, b_MW = baseMVA/x_pu, θ в радианах
-"""
 function solve_lopf(buses, lines, generators, loads, line_names;
                     line_capacity = Inf,
                     baseMVA       = 100.0,
@@ -23,8 +12,6 @@ function solve_lopf(buses, lines, generators, loads, line_names;
     n_buses = length(buses)
     n_lines = length(lines)
 
-    # --- Матрица восприимчивостей B [МВт/рад] ---
-    # b_MW = baseMVA / x_pu — стандартная конвертация из per-unit в МВт
     B = zeros(n_buses, n_buses)
     susceptances = Float64[]
     for (from, to, r, x) in lines
@@ -36,19 +23,16 @@ function solve_lopf(buses, lines, generators, loads, line_names;
         B[to,   from] -= b
     end
 
-    # --- Нагрузки [МВт] ---
     P_load = zeros(n_buses)
     for (bus, P) in loads
         P_load[bus] = P
     end
 
-    # --- Данные генераторов ---
     gen_buses = sort(collect(keys(generators)))
     P_max_gen = Dict(bus => generators[bus][1] for bus in gen_buses)
     costs     = Dict(bus => generators[bus][2] for bus in gen_buses)
     ref_bus   = gen_buses[1]
 
-    # --- JuMP модель (HiGHS — открытый LP/MIP решатель) ---
     model = Model(HiGHS.Optimizer)
     set_silent(model)
 
@@ -57,17 +41,14 @@ function solve_lopf(buses, lines, generators, loads, line_names;
               lower_bound = 0.0,
               upper_bound = P_max_gen[bus])                                 # мощность [МВт]
 
-    # θ_ref = 0
     @constraint(model, ref_angle, θ[ref_bus] == 0.0)
 
-    # Баланс мощности: B·θ = P_gen - P_load на каждом узле
     for k in 1:n_buses
         P_inj_gen = (k in gen_buses) ? P_gen[k] : 0.0
         @constraint(model,
             sum(B[k, m] * θ[m] for m in 1:n_buses) == P_inj_gen - P_load[k])
     end
 
-    # Ограничения пропускной способности линий [МВт]
     if isfinite(line_capacity)
         for (i, (from, to, r, x)) in enumerate(lines)
             b = susceptances[i]
@@ -76,10 +57,8 @@ function solve_lopf(buses, lines, generators, loads, line_names;
         end
     end
 
-    # Целевая функция: min Σ c_i · P_gen_i [€/ч]
     @objective(model, Min, sum(costs[bus] * P_gen[bus] for bus in gen_buses))
 
-    # --- Решение ---
     optimize!(model)
 
     status = termination_status(model)
@@ -142,28 +121,6 @@ function solve_lopf(buses, lines, generators, loads, line_names;
 end
 
 
-# ============================================================
-# ТЕСТ: 3-узловая сеть, 2 генератора разной стоимости
-# ============================================================
-#
-#  G1 (дешёвый, 20 €/МВт·ч)      G2 (дорогой, 50 €/МВт·ч)
-#  P_max = 400 МВт                P_max = 300 МВт
-#       [Bus 1] ──── Line 1-2 ──── [Bus 2]
-#           \                         /
-#         Line 1-3              Line 2-3
-#               \               /
-#               [Bus 3] (нагрузка 300 МВт)
-#
-#  Нагрузка: Bus 2 = 200 МВт, Bus 3 = 300 МВт  → Итого 500 МВт
-#
-#  Сценарий А (без ограничений):
-#    G1 = 400 МВт (максимум), G2 = 100 МВт → стоимость 13 000 €/ч
-#    Потоки: P_13 = 233 МВт, P_12 = 167 МВт
-#
-#  Сценарий Б (линии ограничены 200 МВт):
-#    P_13 = 233 МВт > 200 → перегрузка! → G2 вынужден взять нагрузку
-#    Оптимум: G1 = 300 МВт, G2 = 200 МВт → стоимость 16 000 €/ч (+23%)
-# ============================================================
 
 println("="^62)
 println("LINEAR OPTIMAL POWER FLOW (LOPF)")
@@ -172,30 +129,24 @@ println("="^62)
 
 buses = ["Bus 1", "Bus 2", "Bus 3"]
 
-# (from, to, r [pu], x [pu])
 lines      = [(1, 2, 0.01, 0.1), (1, 3, 0.01, 0.1), (2, 3, 0.01, 0.1)]
 line_names = ["Line 1-2", "Line 1-3", "Line 2-3"]
 
-# generators[bus] = (P_max [МВт], marginal_cost [€/МВт·ч])
 generators = Dict(
     1 => (400.0, 20.0),
     2 => (300.0, 50.0),
 )
 
-# loads[bus] = P [МВт]
 loads = Dict(2 => 200.0, 3 => 300.0)
 
-# ---------- Сценарий А: без ограничений ----------
 println("\n📌 SCENARIO A — No line limits (unconstrained dispatch)")
 res_A = solve_lopf(buses, lines, generators, loads, line_names,
                    line_capacity = Inf)
 
-# ---------- Сценарий Б: ограничение 200 МВт ----------
 println("\n📌 SCENARIO B — Line capacity = 200 MW (congestion case)")
 res_B = solve_lopf(buses, lines, generators, loads, line_names,
                    line_capacity = 200.0)
 
-# ---------- Сравнение сценариев ----------
 if res_A.converged && res_B.converged
     println("\n" * "="^62)
     println("SCENARIO COMPARISON  (Unconstrained vs Congested grid)")
@@ -212,7 +163,6 @@ if res_A.converged && res_B.converged
     @printf("%-28s %14s %13.1f%%\n", "Cost increase", "—", pct)
     println("\n→ Grid congestion forces expensive G2 online, raising cost by $(round(pct,digits=1))%")
 
-    # ---------- Сравнение с PyPSA (ожидаемые значения) ----------
     println("\n" * "="^62)
     println("VALIDATION vs PyPSA")
     println("="^62)
